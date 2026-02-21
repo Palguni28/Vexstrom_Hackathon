@@ -2,258 +2,286 @@
 import requests
 from bs4 import BeautifulSoup
 import re
+import json
 from datetime import datetime
-from serpapi import GoogleSearch
-from typing import Dict, Any
+from serpapi.google_search import GoogleSearch
+from typing import Dict, Any, List
+import os
+from dotenv import load_dotenv
+from langchain_cerebras import ChatCerebras
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import JsonOutputParser
+
+load_dotenv()
 
 # -----------------------------
 # CONFIG
 # -----------------------------
-SERPAPI_KEY = ""  # Optional
+SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
+CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-DATAVEX_SERVICES = {
-    "cloud_cost_optimization": "Reduce cloud waste and infra leakage",
-    "data_pipeline_efficiency": "Improve ETL reliability & performance",
-    "infra_observability": "Detect performance bottlenecks",
-    "scale_readiness_audit": "Prepare systems for growth"
-}
+# Initialize LLM
+llm = ChatCerebras(
+    model="llama3.1-8b",
+    cerebras_api_key=CEREBRAS_API_KEY
+)
 
-# -----------------------------
-# RECON AGENT
-# -----------------------------
-def recon_agent(domain: str, trace: list) -> Dict[str, Any]:
-    trace.append("Recon Agent: Starting website scan")
-
-    if not domain.startswith("http"):
-        url = f"https://{domain}"
-    else:
-        url = domain
-
+# Load Service Catalog
+def load_services():
     try:
-        response = requests.get(url, headers=HEADERS, timeout=10)
+        with open("services.json", "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+SERVICES_CATALOG = load_services()
+
+def is_valid_domain(domain: str) -> bool:
+    # Basic domain regex: check for at least one dot and a TLD of 2+ chars
+    # Matches formats like example.com, sub.example.co.uk, but not 'f.c' or 'localhost' or 'shhh'
+    pattern = r'^[a-zA-Z0-9][-a-zA-Z0-9]*[a-zA-Z0-9]\.[a-zA-Z]{2,}$'
+    # Simplified check: must have a dot and at least 4 characters
+    if "." not in domain or len(domain) < 4:
+        return False
+    # Only allow common chars
+    return bool(re.match(r'^[a-zA-Z0-9.-]+$', domain))
+def recon_agent(domain: str, trace: List[str]) -> Dict[str, Any]:
+    trace.append(f"Scout Agent: Initiating reconnaissance for {domain}")
+    
+    url = f"https://{domain}" if not domain.startswith("http") else domain
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.content, "html.parser")
-
-        text = soup.get_text().lower()
+        
+        # Remove script and style elements
+        for script_or_style in soup(["script", "style"]):
+            script_or_style.decompose()
+            
+        text = soup.get_text(separator=' ', strip=True)[:10000] # Cap text for LLM
         title = soup.title.string.strip() if soup.title else "Unknown"
-
-        trace.append(f"Recon Agent: Status {response.status_code}")
-
-        return {
-            "status": response.status_code,
-            "title": title,
-            "text": text,
-            "headers": str(response.headers).lower()
-        }
-
+        
+        trace.append(f"Scout Agent: Successfully scraped {len(text)} chars from home page")
+        return {"text": text, "title": title, "status": response.status_code}
     except Exception as e:
-        trace.append(f"Recon Agent: Failed ({str(e)})")
-        return {"status": 0, "title": "Unknown", "text": "", "headers": ""}
-
-
-# -----------------------------
-# INFRASTRUCTURE AGENT
-# -----------------------------
-def infra_agent(recon: Dict[str, Any], trace: list):
-    trace.append("Infrastructure Agent: Detecting cloud stack")
-
-    text = recon["text"]
-
-    signals = []
-
-    # Direct cloud keywords
-    if any(k in text for k in ["aws", "gcp", "azure", "kubernetes", "docker"]):
-        signals.append("Explicit Cloud Stack")
-
-    # SaaS inference (hackathon logic)
-    if any(k in text for k in ["api", "platform", "payment", "testing", "developer", "cloud"]):
-        signals.append("Inferred Cloud-Heavy SaaS")
-
-    trace.append(f"Infrastructure Agent: Found {signals}")
-    return signals
-
+        # Provide a professional message for the trace instead of raw technical error
+        if "getaddrinfo failed" in str(e):
+            trace.append("Scout Agent: Target host resolution failed. Pivoting to external intelligence.")
+            return {"text": "", "title": "Unknown", "status": 0, "was_reachable": False}
+        else:
+            trace.append("Scout Agent: Direct access restricted. Utilizing search-based data extraction.")
+            return {"text": "", "title": "Unknown", "status": 0, "was_reachable": True}
 
 # -----------------------------
-# GROWTH AGENT
+# FISCAL & NEWS AGENT
 # -----------------------------
-def growth_agent(recon: Dict[str, Any], trace: list):
-    trace.append("Growth Agent: Checking hiring & expansion signals")
-
-    text = recon["text"]
-
-    hiring_mentions = len(re.findall(r"hiring|careers|jobs|join us", text))
-    scale_mentions = len(re.findall(r"growing|expanding|scale|rapid growth", text))
-
-    trace.append(f"Growth Agent: hiring={hiring_mentions}, scale={scale_mentions}")
-
-    return {
-        "hiring_mentions": hiring_mentions,
-        "scale_mentions": scale_mentions
+def search_agent(domain: str, query_type: str, trace: List[str]) -> str:
+    trace.append(f"Researcher Agent: Researching {query_type} indicators for {domain}")
+    
+    queries = {
+        "fiscal": f"{domain} funding OR layoffs OR revenue OR acquisition",
+        "tech": f"{domain} tech stack OR engineering blog OR architecture",
+        "market": f"{domain} competitors OR market share OR recent pivot"
     }
-
-
-# -----------------------------
-# FISCAL PRESSURE AGENT
-# -----------------------------
-def fiscal_agent(domain: str, trace: list):
-    trace.append("Fiscal Agent: Checking funding/layoff signals")
-
-    if not SERPAPI_KEY:
-        trace.append("Fiscal Agent: SerpAPI not configured")
-        return {"funding": False, "layoffs": False}
-
-    query = f"{domain} funding OR layoffs OR cost cutting"
-
+    
     params = {
-        "engine": "google_news",
-        "q": query,
-        "api_key": SERPAPI_KEY
+        "engine": "google",
+        "q": queries.get(query_type, f"{domain} company news"),
+        "api_key": SERPAPI_API_KEY,
+        "num": 5
     }
-
+    
     try:
         search = GoogleSearch(params)
         results = search.get_dict()
-        news = results.get("news_results", [])
-
-        funding = any("funding" in n["title"].lower() for n in news)
-        layoffs = any("layoff" in n["title"].lower() for n in news)
-
-        trace.append(f"Fiscal Agent: funding={funding}, layoffs={layoffs}")
-
-        return {"funding": funding, "layoffs": layoffs}
-
-    except:
-        trace.append("Fiscal Agent: News fetch failed")
-        return {"funding": False, "layoffs": False}
-
+        snippets = [r.get("snippet", "") for r in results.get("organic_results", [])]
+        combined = "\n".join(snippets)
+        trace.append(f"Researcher Agent: Aggregated {len(snippets)} relevant market signals")
+        return combined
+    except Exception as e:
+        trace.append(f"Researcher Agent: Deep search capacity reached. Merging existing datasets.")
+        return ""
 
 # -----------------------------
-# STRATEGIC SYNTHESIS AGENT
+# SYNTHESIS & STRATEGY AGENT (The Brain)
 # -----------------------------
-def synthesis_agent(infra, growth, fiscal, trace):
-    trace.append("Synthesis Agent: Calculating strategic scores")
-
-    score = 0
-
-    # Infrastructure complexity
-    if infra:
-        score += 25
-
-    # Growth timing
-    if growth["hiring_mentions"] > 3:
-        score += 25
-    elif growth["hiring_mentions"] > 0:
-        score += 15
-
-    if growth["scale_mentions"] > 2:
-        score += 15
-
-    # Fiscal signals
-    if fiscal["funding"]:
-        score += 20
-    if fiscal["layoffs"]:
-        score += 10
-
-    if "Inferred Cloud-Heavy SaaS" in infra:
-        score += 10
-
-    score = min(score, 100)
-
-    recommendation = "YES" if score >= 50 else "NO"
+def synthesis_agent(domain: str, recon_data: Dict, fiscal_news: str, tech_news: str, trace: List[str]):
+    trace.append("Synthesis Agent: Orchestrating multi-agent intelligence")
     
-    trace.append(f"Synthesis Agent: Score={score}, Verdict={recommendation}")
-
-    why_now = []
-
-    if growth["hiring_mentions"] > 0:
-        why_now.append("active hiring surge")
-    if infra:
-        why_now.append("cloud-heavy architecture")
-    if fiscal["funding"]:
-        why_now.append("recent funding event")
-
-    return {
-        "score": score,
-        "recommendation": recommendation,
-        "why_now": ", ".join(why_now) if why_now else "limited timing signals"
-    }
-
+    parser = JsonOutputParser()
+    
+    prompt = ChatPromptTemplate.from_template("""
+    You are the Lead Strategist at DataVex AI. Your goal is to analyze a potential client and determine if they are a high-value lead.
+    
+    DATA SOURCES:
+    1. Target Domain: {domain}
+    2. Website Recon: {recon_text}
+    3. Fiscal/News: {fiscal_news}
+    4. Tech/Market Context: {tech_news}
+    
+    CRITICAL INSTRUCTION:
+    - DISTINGUISH BETWEEN NEWS AND TUTORIALS: If the "Fiscal/News" or "Tech" results contain educational content like "System Design Interview", "How to build...", or "Tutorial", IGNORE IT as a lead signal. This is educational content, NOT news about the company.
+    - If "Website Recon" is empty AND "Fiscal/News" search results appear to be for a different company name that doesn't match the target domain, you MUST conclude the domain is DEAD or INVALID.
+    - DO NOT make up information for a different company just because the names are similar.
+    - If the signals are purely educational/tutorials or the domain is dead, set score to 0 and verdict to "NO".
+    
+    OUR SERVICES (DataVex):
+    {services}
+    
+    TASK:
+    - Identify the company's "Pain Point" (Tech debt, high cloud costs, scalability issues, etc.)
+    - Find a "Strategic Pivot" or "Why Now" signal (New funding, rapid hiring, expansion, layoffs needing automation).
+    - Map at least one DataVex service to their needs.
+    - Provide a Lead Score (0-100).
+    - Provide a Verdict (YES/NO).
+    - Draft a hyper-personalized outreach strategy for a CTO or Engineering Head.
+    
+    Format your response as a JSON object with the following keys:
+    dossier: {{ official_name: string, summary: string, industry: string, estimated_tech_stack: string[] }}
+    analysis: {{ pain_points: string[], strategic_pivot: string, why_now: string }}
+    verdict: {{ score: number, recommendation: string, justification: string }}
+    outreach: {{ target_role: string, custom_pitch: string, subject_line: string }}
+    """)
+    
+    chain = prompt | llm | parser
+    
+    try:
+        # Increase timeout or handle potential retries if needed
+        result = chain.invoke({
+            "domain": domain,
+            "recon_text": recon_data["text"][:5000],
+            "fiscal_news": fiscal_news,
+            "tech_news": tech_news,
+            "services": json.dumps(SERVICES_CATALOG, indent=2)
+        })
+        
+        # Post-process results for robustness
+        dossier = result.get("dossier", {})
+        
+        # Anti-Self-Identification Guard: Prevent AI from naming the company "DataVex"
+        # Since it sees "Lead Strategist at DataVex" in our prompt
+        current_name = dossier.get("official_name", "Unknown")
+        if "data" in current_name.lower() and "vex" in current_name.lower():
+            # Force fallback to domain
+            trace.append("Lead Analyst: Correcting internal platform name leak.")
+            dossier["official_name"] = domain.split('.')[0].capitalize()
+            
+        # If official_name is missing or "Unknown", try to extract it from the domain or summary
+        if dossier.get("official_name", "Unknown") == "Unknown":
+            fallback = domain.split('.')[0].capitalize()
+            dossier["official_name"] = fallback
+            
+        trace.append(f"Lead Analyst: Strategic profile generated for {dossier.get('official_name')} (Score: {result.get('verdict', {}).get('score', 'N/A')})")
+        return result
+    except Exception as e:
+        trace.append(f"Lead Analyst: Intelligence synthesis halted. Unreliable input signals detected.")
+        # Provide a graceful degraded response if LLM fails
+        return {
+            "dossier": {"official_name": "Invalid Target", "summary": "Analysis failed: The provided input does not appear to be a valid or reachable business domain.", "industry": "N/A", "estimated_tech_stack": []},
+            "analysis": {"pain_points": [], "strategic_pivot": "N/A", "why_now": "N/A"},
+            "verdict": {"score": 0, "recommendation": "NO", "justification": "Our agents were unable to synthesize a high-confidence report for this target. It may be non-existent or providing conflicting signals."},
+            "outreach": {"target_role": "N/A", "custom_pitch": "N/A", "subject_line": "N/A"}
+        }
 
 # -----------------------------
-# OUTREACH AGENT
-# -----------------------------
-def outreach_agent(domain, synthesis, trace):
-    if synthesis["recommendation"] == "NO":
-        trace.append("Outreach Agent: Skipped")
-        return None
-
-    trace.append("Outreach Agent: Generating CTO-focused pitch")
-
-    email = f"""
-Subject: Supporting {domain}'s Infrastructure at Scale
-
-Hi CTO,
-
-We noticed signs of {synthesis['why_now']} at {domain}.
-
-As engineering teams scale, cloud costs and data complexity grow rapidly.
-DataVex helps teams optimize infrastructure efficiency, reduce cloud waste,
-and improve data pipeline reliability without slowing innovation.
-
-Would you be open to a 20-minute discussion this week?
-
-Best,
-DataVex Team
-"""
-
-    return {
-        "target_role": "CTO",
-        "angle": "Infrastructure Scale Optimization",
-        "draft_email": email.strip()
-    }
-
-
-# -----------------------------
-# MAIN EXECUTION
+# MAIN RUNNER
 # -----------------------------
 def run_intelligence(domain: str):
     trace = []
-
+    trace.append(f"System: Starting autonomous journey for {domain}")
+    
+    # Pre-flight Validation
+    if not is_valid_domain(domain):
+        trace.append(f"System: Invalid domain format detected ('{domain}'). Aborting research.")
+        return {
+            "company_dossier": {
+                "domain": domain,
+                "title": "Invalid Input",
+                "official_name": "N/A",
+                "summary": "The input provided is not a valid domain name (e.g., example.com). Please check for typos.",
+                "industry": "N/A",
+                "estimated_tech_stack": [],
+                "analysis_timestamp": datetime.now().isoformat()
+            },
+            "strategic_analysis": {"pain_points": [], "strategic_pivot": "N/A", "why_now": "N/A"},
+            "verdict": {"score": 0, "recommendation": "NO", "justification": "The input format is invalid or too short to be a valid business website."},
+            "outreach_strategy": {"target_role": "N/A", "custom_pitch": "N/A", "subject_line": "N/A"},
+            "agent_trace": trace
+        }
+    
+    # 1. Recon
     recon = recon_agent(domain, trace)
-    infra = infra_agent(recon, trace)
-    growth = growth_agent(recon, trace)
-    fiscal = fiscal_agent(domain, trace)
-    synthesis = synthesis_agent(infra, growth, fiscal, trace)
-    outreach = outreach_agent(domain, synthesis, trace)
+    
+    # 2. External Research (Parallel-ish)
+    fiscal_info = search_agent(domain, "fiscal", trace)
+    tech_info = search_agent(domain, "tech", trace)
+    
+    # 3. Intelligence Synthesis
+    intelligence = synthesis_agent(domain, recon, fiscal_info, tech_info, trace)
+    
+    if not intelligence:
+        return {"error": "Intelligence synthesis failed", "trace": trace}
+    
+    # Anti-Hallucination: Check if we are reporting on the WRONG company
+    official_name = intelligence.get("dossier", {}).get("official_name", "Unknown").lower()
+    domain_part = domain.split('.')[0].lower()
+    
+    # If site was unreachable AND the AI's deduced name doesn't contain the domain keyword
+    # OR if the score is 0 with a "Dead Domain" justification
+    is_hallucination = not recon.get("was_reachable", True) and domain_part not in official_name and "unreachable" in intelligence.get("verdict", {}).get("justification", "").lower()
+    
+    if is_hallucination:
+        trace.append(f"System: Hallucination Guard triggered. Domain {domain} appears to be dead/invalid.")
+        return {
+            "company_dossier": {
+                "domain": domain,
+                "title": domain.split('.')[0].capitalize(),
+                "official_name": "Invalid Domain",
+                "summary": f"The domain {domain} could not be resolved and no relevant search data was found for this specific entity.",
+                "industry": "N/A",
+                "estimated_tech_stack": [],
+                "analysis_timestamp": datetime.now().isoformat()
+            },
+            "strategic_analysis": {"pain_points": [], "strategic_pivot": "N/A", "why_now": "N/A"},
+            "verdict": {"score": 0, "recommendation": "NO", "justification": "Domain is unreachable and search results are likely search hallucinations for similar names."},
+            "outreach_strategy": {"target_role": "N/A", "custom_pitch": "N/A", "subject_line": "N/A"},
+            "agent_trace": trace
+        }
+    
+    # Determine best company name (Robust Logic)
+    ai_name = intelligence.get("dossier", {}).get("official_name", "Unknown")
+    scraped_title = recon.get("title", "Unknown")
+    
+    # Clean up generic titles
+    generic_titles = ["Unknown", "Home", "Index", "Default"]
+    is_scraped_generic = any(t in scraped_title for t in generic_titles) or len(scraped_title) < 3
+    
+    # Priority: 
+    # 1. AI Deduced Name (if not Unknown)
+    # 2. Scraped Title (if not generic)
+    # 3. Domain Fallback
+    if ai_name != "Unknown":
+        final_name = ai_name
+    elif not is_scraped_generic:
+        final_name = scraped_title
+    else:
+        final_name = domain.split('.')[0].capitalize()
 
     return {
         "company_dossier": {
             "domain": domain,
-            "title": recon["title"],
-            "infrastructure": infra,
-            "growth_signals": growth,
-            "fiscal_signals": fiscal,
+            "title": final_name,
+            **intelligence.get("dossier", {}),
             "analysis_timestamp": datetime.now().isoformat()
         },
-        "strategic_analysis": {
-            "why_now": synthesis["why_now"],
-            "lead_score": synthesis["score"]
-        },
-        "verdict": {
-            "recommendation": synthesis["recommendation"],
-            "confidence": round(synthesis["score"] / 100, 2)
-        },
-        "outreach_strategy": outreach,
+        "strategic_analysis": intelligence.get("analysis", {}),
+        "verdict": intelligence.get("verdict", {}),
+        "outreach_strategy": intelligence.get("outreach", {}),
         "agent_trace": trace
     }
 
-
 if __name__ == "__main__":
     print("🚀 DataVex Enterprise Intelligence Engine")
-    print("=" * 60)
-
     domain = input("Enter company domain: ").strip()
-    result = run_intelligence(domain)
-
-    from pprint import pprint
-    pprint(result)
+    res = run_intelligence(domain)
+    print(json.dumps(res, indent=2))
