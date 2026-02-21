@@ -1,0 +1,7 @@
+[
+  {"domain": "flipkart.com", "expected": "PURSUE 8+"},
+  {"domain": "reliance.com", "expected": "PURSUE 8+"}, 
+  {"domain": "zomato.com", "expected": "PURSUE 7+"},
+  {"domain": "startup.local", "expected": "NO GO <5"},
+  {"domain": "nontech.com", "expected": "NO GO <5"}
+]
