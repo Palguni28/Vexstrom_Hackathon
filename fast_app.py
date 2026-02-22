@@ -20,6 +20,10 @@ app.add_middleware(
 class RecommendationRequest(BaseModel):
     service_category: str = "Application Development"
 
+class DeepAnalysisRequest(BaseModel):
+    domain: str
+    service_category: str = "Application Development"
+
 class Lead(BaseModel):
     name: str
     domain: str
@@ -44,6 +48,24 @@ async def analyze_company(request: RecommendationRequest):
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None, find_smb_leads,
+            request.service_category
+        )
+        
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+            
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/deep_analyze")
+async def deep_analyze_company(request: DeepAnalysisRequest):
+    try:
+        from agents import run_intelligence
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, run_intelligence,
+            request.domain,
             request.service_category
         )
         
