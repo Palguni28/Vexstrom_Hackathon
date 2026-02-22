@@ -1,7 +1,7 @@
 fastapi==0.112.2
 uvicorn==0.30.6
-langchain-cerebras==0.1.0
-langchain-core==0.3.0
+langchain-cerebras==0.3.0
+langchain-core>=0.3.0,<1.0.0
 serpapi==0.1.5
 pydantic==2.8.0
 python-dotenv==1.0.0

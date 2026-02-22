@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any
-from agents import run_intelligence
+from agents import find_smb_leads
 import uvicorn
 import asyncio
 
@@ -17,29 +17,57 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class AnalysisRequest(BaseModel):
+class RecommendationRequest(BaseModel):
+    service_category: str = "Application Development"
+
+class Lead(BaseModel):
+    name: str
     domain: str
+    why_we_help: str
+
+class EmailRequest(BaseModel):
+    company_name: str
+    domain: str
+    why_we_help: str
+    service_category: str
+
+class EmailResponse(BaseModel):
+    email_body: str
 
 class AnalysisResponse(BaseModel):
-    company_dossier: Dict[str, Any]
-    strategic_analysis: Dict[str, Any]
-    verdict: Dict[str, Any]
-    outreach_strategy: Dict[str, Any]
+    leads: List[Lead]
     agent_trace: List[str]
 
 @app.post("/analyze", response_model=AnalysisResponse)
-async def analyze_company(request: AnalysisRequest):
+async def analyze_company(request: RecommendationRequest):
     try:
-        # Run the intelligence engine
-        # Since run_intelligence might take time, we run it in a thread/executor
-        # to avoid blocking the event loop
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, run_intelligence, request.domain.strip())
+        result = await loop.run_in_executor(
+            None, find_smb_leads,
+            request.service_category
+        )
         
         if "error" in result:
             raise HTTPException(status_code=500, detail=result["error"])
             
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/generate_email", response_model=EmailResponse)
+async def generate_email(request: EmailRequest):
+    try:
+        from agents import draft_cold_email
+        loop = asyncio.get_event_loop()
+        email_body = await loop.run_in_executor(
+            None, 
+            draft_cold_email,
+            request.company_name,
+            request.domain,
+            request.why_we_help,
+            request.service_category
+        )
+        return {"email_body": email_body}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
