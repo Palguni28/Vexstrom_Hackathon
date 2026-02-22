@@ -54,7 +54,7 @@ pip install fastapi uvicorn requests beautifulsoup4 python-dotenv langchain-cere
 
 Run the backend server:
 ```bash
-python -m uvicorn fast_app:app --reload --port 8000
+python -m uvicorn main:app --reload --port 8000
 ```
 
 ### 3. Frontend Setup
