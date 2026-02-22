@@ -234,7 +234,7 @@ def synthesis_agent(domain: str, recon_data: Dict, fiscal_news: str, size_info: 
     trace.append(f"Lead Analyst: Running SMB qualification analysis focused on '{service_category}'...")
 
     llm = ChatCerebras(
-        model="llama3.1-70b",
+        model="llama3.1-8b",
         api_key=CEREBRAS_API_KEY
     )
 
